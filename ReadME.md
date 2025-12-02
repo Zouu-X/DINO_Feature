@@ -1,0 +1,1 @@
+Use DINO-v3 for feature extraction
