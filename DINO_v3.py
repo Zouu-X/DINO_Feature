@@ -3,6 +3,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from transformers import AutoImageProcessor, AutoModel
+import transformers
 from huggingface_hub import login
 import argparse
 import os
@@ -72,6 +73,7 @@ def main():
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir, exist_ok=True)
         print("------ DINOv3 Feature Extraction ------")
+        print(transformers.__version__)
         login(token=args.token)
 
     # Ensure login happens on all processes or just main? 
@@ -81,7 +83,7 @@ def main():
     # If we run on one node with multiple GPUs, one login is enough if home dir is shared.
     # We'll keep it simple.
     
-    pretrained_model = "facebook/dinov3-vitb16-pretrain-lvd1689m"
+    pretrained_model = "facebook/dinov3-vits16-pretrain-lvd1689m"
     processor = AutoImageProcessor.from_pretrained(pretrained_model)
     model = AutoModel.from_pretrained(
         pretrained_model,
@@ -125,7 +127,15 @@ def main():
         # The original code used [3] and [-1].
         
         layer_3 = hidden_states[3]
-        layer_last = hidden_states[-1]
+        # layer_last = hidden_states[-1]
+        layer_4 = hidden_states[4]
+        layer_5 = hidden_states[5]
+
+        layer_8 = hidden_states[8]
+        layer_9 = hidden_states[9]
+        layer_10 = hidden_states[10]
+        layer_11 = hidden_states[11]
+        
 
         # Extract patches, skipping register tokens
         # Original code: feat_map_3 = layer_3[:, 1+config.num_register_tokens:, :]
@@ -138,9 +148,17 @@ def main():
         # This implies index 0 is CLS, then registers, then patches.
         
         feat_map_3 = layer_3[:, 1+num_registers:, :]
-        feat_map_last = layer_last[:, 1+num_registers:, :]
+        # feat_map_last = layer_last[:, 1+num_registers:, :]
+        feat_map_4 = layer_4[:, 1+num_registers:, :]
+        feat_map_5 = layer_5[:, 1+num_registers:, :]
+
+        # feat_map_8 = layer_8[:, 1+num_registers:, :]
+        feat_map_9 = layer_9[:, 1+num_registers:, :]
+        feat_map_10 = layer_10[:, 1+num_registers:, :]
+        feat_map_11 = layer_11[:, 1+num_registers:, :]
         
-        feature = feat_map_3 + feat_map_last # (B, N, D)
+        # feature = feat_map_3 + feat_map_4 + feat_map_5 # (B, N, D)
+        feature = feat_map_11 + feat_map_9 + feat_map_10
         
         # Reshape to spatial map
         B, N, D = feature.shape
