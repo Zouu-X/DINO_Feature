@@ -12,11 +12,15 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 def setup_ddp():
-    dist.init_process_group(backend="nccl")
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    if "LOCAL_RANK" in os.environ:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+        return True
+    return False
 
 def cleanup_ddp():
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 class MakeupDataset(Dataset):
     def __init__(self, input_dir, mask_dir, processor):
@@ -66,53 +70,61 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
     args = parser.parse_args()
 
-    setup_ddp()
-    local_rank = int(os.environ["LOCAL_RANK"])
+    is_ddp = setup_ddp()
+    
+    if is_ddp:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        local_rank = 0
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     if local_rank == 0:
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir, exist_ok=True)
         print("------ DINOv3 Feature Extraction ------")
-        print(transformers.__version__)
+        print(f"Transformers version: {transformers.__version__}")
+        print(f"Device: {device}")
         login(token=args.token)
-
-    # Ensure login happens on all processes or just main? 
-    # Usually better to do it on all if they need to download, but here we assume cached or do it once.
-    # To be safe, let's just let all do it or assume pre-downloaded. 
-    # If we run on multiple nodes, each node needs it. 
-    # If we run on one node with multiple GPUs, one login is enough if home dir is shared.
-    # We'll keep it simple.
     
     pretrained_model = "facebook/dinov3-vits16-pretrain-lvd1689m"
     processor = AutoImageProcessor.from_pretrained(pretrained_model)
     model = AutoModel.from_pretrained(
         pretrained_model,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32,
         # device_map="auto" # Do not use device_map="auto" with DDP
     )
     
-    model.to(local_rank)
-    model = DDP(model, device_ids=[local_rank])
+    model.to(device)
+    if is_ddp:
+        model = DDP(model, device_ids=[local_rank])
     model.eval()
 
     dataset = MakeupDataset(args.input_dir, args.mask_dir, processor)
-    sampler = DistributedSampler(dataset)
+    
+    if is_ddp:
+        sampler = DistributedSampler(dataset)
+    else:
+        sampler = None
+
     dataloader = DataLoader(
         dataset, 
         batch_size=args.batch_size, 
         sampler=sampler, 
         num_workers=args.num_workers, 
-        pin_memory=True
+        pin_memory=True,
+        shuffle=(sampler is None)
     )
 
     config = model.module.config if hasattr(model, 'module') else model.config
 
     if local_rank == 0:
-        print(f"Processing {len(dataset)} images on {dist.get_world_size()} GPUs...")
+        world_size = dist.get_world_size() if is_ddp else 1
+        print(f"Processing {len(dataset)} images on {world_size} GPUs...")
 
     for pixel_values, masks, filenames in tqdm(dataloader, disable=(local_rank != 0)):
-        pixel_values = pixel_values.to(local_rank, dtype=torch.bfloat16)
-        masks = masks.to(local_rank, dtype=torch.bfloat16)
+        pixel_values = pixel_values.to(device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
+        masks = masks.to(device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
 
         with torch.no_grad():
             outputs = model(pixel_values, output_hidden_states=True)
