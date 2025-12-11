@@ -109,9 +109,12 @@ def main():
             pass
 
     # Gather results
-    # We need to gather lists of tuples. dist.all_gather_object is simplest for this.
-    all_results_lists = [None for _ in range(world_size)]
-    dist.all_gather_object(all_results_lists, local_results)
+    if world_size > 1:
+        # We need to gather lists of tuples. dist.all_gather_object is simplest for this.
+        all_results_lists = [None for _ in range(world_size)]
+        dist.all_gather_object(all_results_lists, local_results)
+    else:
+        all_results_lists = [local_results]
     
     if rank == 0:
         # Flatten list of lists
